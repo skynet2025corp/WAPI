@@ -1,0 +1,101 @@
+# Dependencias de Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+
+# Credenciales y autenticación de WhatsApp
+auth_info/
+*.creds
+auth_info/**/*.json
+
+# Variables de entorno
+.env
+.env.local
+.env.*.local
+*.env
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# Archivos del sistema operativo
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Linux
+*~
+.directory
+.Trash-*
+
+# Archivos temporales
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+.cache/
+
+# Archivos de IDE
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+*.code-workspace
+
+# Build y dist
+dist/
+build/
+out/
+*.tsbuildinfo
+
+# Archivos de sesión y datos temporales
+*.session
+*.data
+*.db
+*.sqlite
+*.sqlite3
+
+# Archivos multimedia grandes (opcional, descomenta si no quieres subirlos)
+# *.mp4
+# *.avi
+# *.mov
+# *.mkv
+# *.mp3
+# *.wav
+# *.zip
+# *.rar
+# *.7z
+# *.tar
+# *.gz
+
+# Archivos de backup
+*.bak
+*.backup
+*.old
+
+# Coverage y testing
+coverage/
+.nyc_output/
+*.lcov
+
+# Archivos específicos de Baileys/WhatsApp
+store/
+*.store
+*.wa.me
+

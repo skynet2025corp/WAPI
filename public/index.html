@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WhatsApp Mass Messenger</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar con lista de chats -->
+        <div class="sidebar">
+            <div class="sidebar-header">
+                <div class="user-info">
+                    <div class="avatar">
+                        <i class="fas fa-robot"></i>
+                    </div>
+                    <div class="user-details">
+                        <h3>WhatsApp Bot</h3>
+                        <span id="connection-status" class="status disconnected">Desconectado</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="sidebar-menu">
+                <button class="menu-btn active" onclick="showSection('chat')">
+                    <i class="fas fa-comments"></i>
+                    Chat Individual
+                </button>
+                <button class="menu-btn" onclick="showSection('bulk')">
+                    <i class="fas fa-bullhorn"></i>
+                    Mensaje Masivo
+                </button>
+                <button class="menu-btn" onclick="showSection('contacts')">
+                    <i class="fas fa-users"></i>
+                    Estadísticas
+                </button>
+            </div>
+
+            <!-- Lista de Chats -->
+            <div class="chats-list">
+                <div class="chats-header">
+                    <h4><i class="fas fa-comments"></i> Chats</h4>
+                    <button class="new-chat-btn" onclick="openNewChatModal()">
+                        <i class="fas fa-plus"></i> Nuevo
+                    </button>
+                </div>
+                <div class="chats-container" id="chats-container">
+                    <div class="no-chats">
+                        <i class="fas fa-comment-slash"></i>
+                        <p>No hay chats disponibles</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="qr-container" id="qr-container" style="display: none;">
+                <h4>Escanear QR</h4>
+                <div id="qrcode"></div>
+                <p>Escanea con WhatsApp</p>
+            </div>
+        </div>
+
+        <!-- Main Content -->
+        <div class="main-content">
+            <!-- Chat Section -->
+            <div id="chat-section" class="section active">
+                <div class="chat-header">
+                    <div class="chat-info">
+                        <h2 id="active-chat-name">
+                            <i class="fas fa-user"></i>
+                            Selecciona un chat
+                        </h2>
+                        <span id="active-chat-type" class="chat-type"></span>
+                    </div>
+                    <div class="header-actions">
+                        <button class="btn btn-clear" onclick="clearChat()">
+                            <i class="fas fa-trash"></i> Limpiar
+                        </button>
+                    </div>
+                </div>
+
+                <div class="chat-container">
+                    <div class="messages-container" id="messages-container">
+                        <div class="welcome-message">
+                            <i class="fas fa-comments"></i>
+                            <h3>Bienvenido al Chat</h3>
+                            <p>Selecciona un contacto o grupo de la lista para comenzar a chatear</p>
+                            <p style="margin-top: 10px; font-size: 14px;">O crea un nuevo chat usando el botón "+ Nuevo"</p>
+                        </div>
+                    </div>
+
+                    <div class="message-input-container" id="message-input-container" style="display: none;">
+                        <div class="input-group">
+                            <input type="text" id="message-text" placeholder="Escribe tu mensaje..." class="text-input">
+                            <button id="send-message-btn" class="btn btn-send">
+                                <i class="fas fa-paper-plane"></i> Enviar
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Bulk Message Section -->
+            <div id="bulk-section" class="section">
+                <div class="chat-header">
+                    <h2><i class="fas fa-bullhorn"></i> Mensaje Masivo</h2>
+                </div>
+
+                <div class="bulk-container">
+                    <div class="bulk-form">
+                        <div class="form-group">
+                            <label for="bulk-numbers">
+                                <i class="fas fa-users"></i> Números de destino
+                            </label>
+                            <textarea id="bulk-numbers" placeholder="Ingresa los números separados por coma o por línea. Ejemplo:
+1234567890
+0987654321
+1112223333" rows="6"></textarea>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="bulk-message">
+                                <i class="fas fa-envelope"></i> Mensaje
+                            </label>
+                            <textarea id="bulk-message" placeholder="Escribe el mensaje que quieres enviar masivamente..." rows="4"></textarea>
+                        </div>
+
+                        <button id="send-bulk-btn" class="btn btn-bulk">
+                            <i class="fas fa-paper-plane"></i> Enviar Mensaje Masivo
+                        </button>
+
+                        <div id="bulk-progress" class="progress-container" style="display: none;">
+                            <div class="progress-bar">
+                                <div class="progress-fill" id="progress-fill"></div>
+                            </div>
+                            <div class="progress-info">
+                                <span id="progress-text">0/0</span>
+                                <span id="progress-stats">✅ 0 | ❌ 0</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Contacts Section -->
+            <div id="contacts-section" class="section">
+                <div class="chat-header">
+                    <h2><i class="fas fa-users"></i> Estadísticas</h2>
+                </div>
+
+                <div class="stats-container">
+                    <div class="stat-cards">
+                        <div class="stat-card">
+                            <div class="stat-icon" style="background: #25D366;">
+                                <i class="fas fa-plug"></i>
+                            </div>
+                            <div class="stat-info">
+                                <h3 id="status-connected">Desconectado</h3>
+                                <p>Estado de Conexión</p>
+                            </div>
+                        </div>
+
+                        <div class="stat-card">
+                            <div class="stat-icon" style="background: #FF6B6B;">
+                                <i class="fas fa-comments"></i>
+                            </div>
+                            <div class="stat-info">
+                                <h3 id="total-chats">0</h3>
+                                <p>Chats Activos</p>
+                            </div>
+                        </div>
+
+                        <div class="stat-card">
+                            <div class="stat-icon" style="background: #4ECDC4;">
+                                <i class="fas fa-user-friends"></i>
+                            </div>
+                            <div class="stat-info">
+                                <h3 id="total-messages">0</h3>
+                                <p>Total Mensajes</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal para nuevo chat -->
+    <div id="newChatModal" class="modal">
+        <div class="modal-content">
+            <h3><i class="fas fa-plus"></i> Nuevo Chat</h3>
+            <div class="modal-input-group">
+                <input type="text" id="new-chat-number" class="modal-input" placeholder="Número (ej: 1234567890)" maxlength="15">
+            </div>
+            <div class="modal-buttons">
+                <button class="btn btn-cancel" onclick="closeNewChatModal()">Cancelar</button>
+                <button class="btn btn-create" onclick="createNewChat()">Crear Chat</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+    <script src="script.js"></script>
+</body>
+</html>
