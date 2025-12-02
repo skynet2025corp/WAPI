@@ -124,6 +124,26 @@
                             <!-- Secciones dinámicas: cada una contiene número y mensajes -->
                         </div>
 
+                        <!-- Status table for each number -->
+                        <div id="sections-status" class="sections-status">
+                            <h3>Estado de números</h3>
+                            <div class="status-controls">
+                                <button id="clear-status-btn" class="btn btn-clear">Limpiar estado</button>
+                            </div>
+                            <table id="sections-status-table" class="status-table">
+                                <thead>
+                                    <tr>
+                                        <th>Sección</th>
+                                        <th>Número</th>
+                                        <th>Mensajes</th>
+                                        <th>Progreso</th>
+                                        <th>Estado</th>
+                                    </tr>
+                                </thead>
+                                <tbody></tbody>
+                            </table>
+                        </div>
+
                         <button id="send-sections-btn" class="btn btn-bulk">
                             <i class="fas fa-paper-plane"></i> Enviar Secciones
                         </button>

@@ -28,9 +28,46 @@ class WhatsAppBot {
     async connect() {
         try {
             console.log('🔗 Iniciando conexión con WhatsApp...');
-            
+
+            const connectStart = Date.now();
+            console.log(`⏱️ Connect start: ${new Date(connectStart).toLocaleTimeString()}`);
+
+            // auth state
+            const authStart = Date.now();
             const { state, saveCreds } = await useMultiFileAuthState('./auth_info');
-            const { version } = await fetchLatestBaileysVersion();
+            const authEnd = Date.now();
+            console.log(`⏱️ Auth state load time: ${(authEnd - authStart)} ms`);
+
+            // Try to reuse a cached baileys version to avoid network delay; fallback to fetchLatestBaileysVersion
+            const fs = require('fs');
+            const versionCacheFile = './.baileys_version_cache.json';
+            let version;
+            try {
+                if (fs.existsSync(versionCacheFile)) {
+                    const cache = JSON.parse(fs.readFileSync(versionCacheFile, 'utf8'));
+                    const now = Date.now();
+                    // if cached less than 24h, reuse
+                    if (cache && cache.version && (now - cache.t) < 24 * 60 * 60 * 1000) {
+                        version = cache.version;
+                        console.log('📦 Reusing cached Baileys version:', version.version.join('.'));
+                    }
+                }
+            } catch (e) {
+                console.warn('No pudo leerse la caché de versión:', e.message || e);
+            }
+
+            if (!version) {
+                const versionStart = Date.now();
+                const fetched = await fetchLatestBaileysVersion();
+                version = fetched.version;
+                try {
+                    fs.writeFileSync(versionCacheFile, JSON.stringify({ t: Date.now(), version }), 'utf8');
+                } catch (e) {
+                    console.warn('No se pudo guardar la caché de versión:', e.message || e);
+                }
+                const versionEnd = Date.now();
+                console.log(`⏱️ fetchLatestBaileysVersion: ${(versionEnd - versionStart)} ms`);
+            }
             
             this.sock = makeWASocket({
                 auth: state,
@@ -53,6 +90,9 @@ class WhatsAppBot {
                 connectTimeoutMs: 60000,
             });
 
+            const connectEnd = Date.now();
+            console.log(`⏱️ Total connect setup time: ${(connectEnd - connectStart)} ms`);
+
             this.sock.ev.on('connection.update', (update) => {
                 const { connection, lastDisconnect, qr } = update;
                 
@@ -62,6 +102,9 @@ class WhatsAppBot {
                     console.log('\n📱 ESCANEA ESTE CÓDIGO QR CON WHATSAPP:');
                     qrcode.generate(qr, { small: true });
                     io.emit('qr', qr);
+                    // log timestamp for when QR appears
+                    const qrTime = Date.now();
+                    console.log(`⏱️ QR emitted after ${(qrTime - connectStart)} ms`);
                     io.emit('status', 'Escanea el código QR con WhatsApp');
                 }
 
@@ -355,11 +398,15 @@ class WhatsAppBot {
         let errors = 0;
         let current = 0;
 
+        // Track per-number counters
+        const perNumberCounters = {};
         for (let si = 0; si < normalized.length; si++) {
             const s = normalized[si];
             for (let ni = 0; ni < s.numbers.length; ni++) {
                 const numberRaw = (s.numbers[ni] || '').toString();
                 const number = numberRaw.includes('@') ? numberRaw : numberRaw + '@s.whatsapp.net';
+                const perKey = `${si}-${ni}`;
+                perNumberCounters[perKey] = perNumberCounters[perKey] || { success: 0, errors: 0 };
                 // Preflight check: if possible, validate that number is a WhatsApp account
                 try {
                     if (typeof this.sock.onWhatsApp === 'function') {
@@ -381,8 +428,10 @@ class WhatsAppBot {
                     try {
                         await this.sendMessage(number, text);
                         success++;
+                        perNumberCounters[perKey].success++;
                     } catch (error) {
                         errors++;
+                        perNumberCounters[perKey].errors++;
                     }
                     current++;
                     io.emit('sections_progress', {
@@ -393,6 +442,8 @@ class WhatsAppBot {
                         sectionIndex: si,
                         numberIndex: ni,
                         number: numberRaw,
+                        perNumberSuccess: perNumberCounters[perKey].success,
+                        perNumberErrors: perNumberCounters[perKey].errors,
                         sectionTotal: s.messages.length,
                         sectionCurrent: mi + 1
                     });

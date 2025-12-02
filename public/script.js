@@ -7,6 +7,9 @@ class WhatsAppUI {
         this.setupSocketHandlers();
         // Add an initial section
         this.addSection();
+        // Map to track statuses of numbers: key = `${sectionIndex}-${numberIndex}`
+        this.sectionsStatus = new Map();
+        this.lastGlobalSectionsProgress = { success: 0, errors: 0, current: 0 };
     }
 
     setupEventListeners() {
@@ -28,6 +31,8 @@ class WhatsAppUI {
         if (csvFile) csvFile.addEventListener('change', (e) => this.handleCSVUpload(e));
         const sendSectionsBtn = document.getElementById('send-sections-btn');
         if (sendSectionsBtn) sendSectionsBtn.addEventListener('click', () => this.sendSections());
+        const clearStatusBtn = document.getElementById('clear-status-btn');
+        if (clearStatusBtn) clearStatusBtn.addEventListener('click', () => this.clearSectionsStatus());
 
         // Enter en el modal de nuevo chat
         document.getElementById('new-chat-number').addEventListener('keypress', (e) => {
@@ -175,8 +180,12 @@ class WhatsAppUI {
         this.socket.on('bulk_progress', (data) => { this.updateBulkProgress(data); });
         this.socket.on('bulk_complete', (data) => { this.completeBulkSend(data); });
         this.socket.on('sections_start', (data) => { this.showBulkProgress(data); });
-        this.socket.on('sections_progress', (data) => { this.updateBulkProgress(data); });
+        this.socket.on('sections_progress', (data) => {
+            this.updateBulkProgress(data);
+            this.updateSectionsStatusFromProgress(data);
+        });
         this.socket.on('sections_complete', (data) => { this.completeBulkSend(data); });
+        this.socket.on('sections_complete', (data) => { this.finalizeSectionsStatus(data); });
 
         this.socket.on('error', (error) => {
             this.showError(error);
@@ -582,8 +591,112 @@ class WhatsAppUI {
             totalMessages += messages.length;
         }
 
+        // Prepare and render status table
+        this.prepareSectionsStatus(sections);
+        this.renderSectionsStatusTable();
+
         // Emitir evento al servidor
         this.socket.emit('send_sections', { sections });
+    }
+
+    prepareSectionsStatus(sections) {
+        // Reset status map
+        this.sectionsStatus.clear();
+        // Sections is array of {numbers:[], messages:[]}
+        for (let si = 0; si < sections.length; si++) {
+            const s = sections[si];
+            const msgsLen = Array.isArray(s.messages) ? s.messages.length : 1;
+            for (let ni = 0; ni < s.numbers.length; ni++) {
+                const number = s.numbers[ni];
+                const key = `${si}-${ni}`;
+                this.sectionsStatus.set(key, {
+                    sectionIndex: si,
+                    numberIndex: ni,
+                    number: number,
+                    totalMessages: msgsLen,
+                    success: 0,
+                    errors: 0,
+                    status: 'pending'
+                });
+            }
+        }
+    }
+
+    clearSectionsStatus() {
+        this.sectionsStatus.clear();
+        this.renderSectionsStatusTable();
+    }
+
+    renderSectionsStatusTable() {
+        const tbody = document.querySelector('#sections-status-table tbody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+        for (const [key, st] of this.sectionsStatus.entries()) {
+            const tr = document.createElement('tr');
+            tr.dataset.key = key;
+            tr.innerHTML = `
+                <td>${st.sectionIndex + 1}</td>
+                <td>${this.escapeHtml(st.number)}</td>
+                <td>${st.totalMessages}</td>
+                <td id="progress-${key}">${st.success}/${st.totalMessages}</td>
+                <td id="status-${key}">${st.status}</td>
+            `;
+            tbody.appendChild(tr);
+        }
+    }
+
+    updateSectionsStatusFromProgress(data) {
+        // data provides sectionIndex and numberIndex
+        if (typeof data.sectionIndex === 'undefined' || typeof data.numberIndex === 'undefined') {
+            // If no per-number info, ignore
+            return;
+        }
+        const key = `${data.sectionIndex}-${data.numberIndex}`;
+        const st = this.sectionsStatus.get(key);
+        if (!st) return;
+        // Compute delta from last global counters to apply per-number updates when perNumber fields may be missing
+        const last = this.lastGlobalSectionsProgress || { success: 0, errors: 0, current: 0 };
+        const deltaSuccess = (typeof data.success !== 'undefined') ? data.success - last.success : 0;
+        const deltaErrors = (typeof data.errors !== 'undefined') ? data.errors - last.errors : 0;
+
+        // Update last global progress
+        this.lastGlobalSectionsProgress = { success: (data.success || 0), errors: (data.errors || 0), current: (data.current || 0) };
+        // If server includes sectionCurrent, and we are tracking, increment success when sectionCurrent increased and no error
+        if (typeof data.sectionCurrent !== 'undefined') {
+            // We'll mark as 'in-progress'
+            st.status = 'in-progress';
+            // Update per-number counters if server provides them
+            // Update per-number counters if available
+            if (typeof data.perNumberSuccess !== 'undefined') {
+                st.success = data.perNumberSuccess;
+            } else if (deltaSuccess > 0) {
+                // apply delta heuristically to the current number
+                st.success = (st.success || 0) + deltaSuccess;
+            }
+            if (typeof data.perNumberErrors !== 'undefined') {
+                st.errors = data.perNumberErrors;
+            } else if (deltaErrors > 0) {
+                st.errors = (st.errors || 0) + deltaErrors;
+            }
+            if (st.success + st.errors >= st.totalMessages) {
+                // All messages attempted for this number
+                if (st.errors > 0) {
+                    st.status = st.success > 0 ? 'partial' : 'failed';
+                } else {
+                    st.status = 'sent';
+                }
+            }
+        }
+        // Update table row
+        this.sectionsStatus.set(key, st);
+        this.updateSectionsStatusRow(key, st);
+    }
+
+    updateSectionsStatusRow(key, st) {
+        const progressTd = document.getElementById(`progress-${key}`);
+        const statusTd = document.getElementById(`status-${key}`);
+        if (progressTd) progressTd.textContent = `${st.success}/${st.totalMessages}`;
+        if (statusTd) statusTd.textContent = st.status;
     }
 
     updateChatInList(chatData) {
@@ -684,6 +797,27 @@ class WhatsAppUI {
                 this.addSection();
             }
         }, 1000);
+    }
+
+    finalizeSectionsStatus(data) {
+        // Iterate all entries and finalize status if not already
+        for (const [key, st] of this.sectionsStatus.entries()) {
+            if (st.success + st.errors >= st.totalMessages) {
+                // Already finalized
+            } else {
+                // If total messages > 0 and we have some success values, decide
+                if (st.success === st.totalMessages) {
+                    st.status = 'sent';
+                } else if (st.success > 0 || st.errors > 0) {
+                    st.status = 'partial';
+                } else {
+                    st.status = 'failed';
+                }
+            }
+            this.updateSectionsStatusRow(key, st);
+        }
+        // Optionally, show a final summary
+        console.log('✅ Finalized sections status');
     }
 
     showError(error) {
