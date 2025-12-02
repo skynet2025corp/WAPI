@@ -98,6 +98,17 @@ class WhatsAppBot {
                 }
             });
 
+            // Escuchar actualizaciones de mensajes (estado: sent/delivered/read)
+            this.sock.ev.on('messages.update', (updates) => {
+                try {
+                    console.log('📬 messages.update', JSON.stringify(updates, null, 2));
+                    // Emitir a los clientes la actualización de entrega si se necesita
+                    io.emit('message_updates', updates);
+                } catch (e) {
+                    console.error('Error procesando messages.update:', e);
+                }
+            });
+
             // Escuchar eventos de chats
             this.sock.ev.on('chats.upsert', (chats) => {
                 this.handleChatsUpdate(chats);
@@ -202,12 +213,7 @@ class WhatsAppBot {
 
             console.log(`📥 Mensaje de ${this.getChatName(sender)}: ${text}`);
 
-            // Respuesta automática opcional
-            if (text.toLowerCase().includes('hola') && !sender.endsWith('@g.us')) {
-                setTimeout(async () => {
-                    await this.sendMessage(sender, '¡Hola! 👋 Soy un bot de mensajería masiva. ¿En qué puedo ayudarte?');
-                }, 1000);
-            }
+            // Se removió respuesta automática fija para evitar mensajes no deseados
 
         } catch (error) {
             console.error('Error procesando mensaje:', error);
@@ -220,7 +226,7 @@ class WhatsAppBot {
                 throw new Error('No conectado a WhatsApp');
             }
 
-            await this.sock.sendMessage(to, { text: text });
+            const sendRes = await this.sock.sendMessage(to, { text: text });
             
             const sentMessage = {
                 id: Date.now().toString(),
@@ -244,9 +250,10 @@ class WhatsAppBot {
                 io.emit('new_message', sentMessage);
             }
 
-            console.log(`📤 Mensaje enviado a ${this.getChatName(to)}: ${text}`);
+            console.log(`📤 Mensaje enviado a ${this.getChatName(to)}: ${text}`, sendRes);
             
-            return true;
+            // Also return the send response so the caller can inspect delivery info
+            return sendRes;
 
         } catch (error) {
             console.error('❌ Error enviando mensaje:', error.message);
@@ -317,6 +324,85 @@ class WhatsAppBot {
         }
 
         io.emit('bulk_complete', { success, errors, total: numbers.length });
+    }
+
+    async sendSections(sections) {
+        if (!this.isConnected) {
+            io.emit('error', 'No conectado a WhatsApp');
+            return;
+        }
+
+        if (!Array.isArray(sections)) {
+            console.warn('sendSections: sections is not an array', sections);
+            io.emit('error', 'Invalid sections payload');
+            return;
+        }
+
+        // Normalize and prepare sections: ensure numbers as array and messages as array
+        const normalized = sections.map((s) => {
+            let numbers = [];
+            if (Array.isArray(s.numbers)) numbers = s.numbers.map(n => (n || '').toString().trim()).filter(Boolean);
+            else if (typeof s.number === 'string' && s.number.trim()) numbers = s.number.split(/[ ,\n\r]+/).map(n => n.trim()).filter(Boolean);
+
+            const messages = Array.isArray(s.messages) ? s.messages : (s.message ? [s.message] : []);
+            return { numbers, messages };
+        });
+
+        const total = normalized.reduce((acc, s) => acc + (s.numbers.length * s.messages.length), 0);
+        io.emit('sections_start', { total });
+
+        let success = 0;
+        let errors = 0;
+        let current = 0;
+
+        for (let si = 0; si < normalized.length; si++) {
+            const s = normalized[si];
+            for (let ni = 0; ni < s.numbers.length; ni++) {
+                const numberRaw = (s.numbers[ni] || '').toString();
+                const number = numberRaw.includes('@') ? numberRaw : numberRaw + '@s.whatsapp.net';
+                // Preflight check: if possible, validate that number is a WhatsApp account
+                try {
+                    if (typeof this.sock.onWhatsApp === 'function') {
+                        const check = await this.sock.onWhatsApp(numberRaw);
+                        // if check indicates it's not on WhatsApp, record an error and continue
+                        if (Array.isArray(check) && check[0] && check[0].exists === false) {
+                            console.log(`⚠️ Número no registrado en WhatsApp: ${numberRaw}`);
+                            errors++;
+                            current++;
+                            io.emit('sections_progress', { current, total, success, errors, sectionIndex: si, numberIndex: ni, number: numberRaw, sectionTotal: s.messages.length, sectionCurrent: 0 });
+                            continue;
+                        }
+                    }
+                } catch (e) {
+                    console.warn('onWhatsApp check failed:', e && e.message ? e.message : e);
+                }
+                for (let mi = 0; mi < s.messages.length; mi++) {
+                    const text = s.messages[mi];
+                    try {
+                        await this.sendMessage(number, text);
+                        success++;
+                    } catch (error) {
+                        errors++;
+                    }
+                    current++;
+                    io.emit('sections_progress', {
+                        current,
+                        total,
+                        success,
+                        errors,
+                        sectionIndex: si,
+                        numberIndex: ni,
+                        number: numberRaw,
+                        sectionTotal: s.messages.length,
+                        sectionCurrent: mi + 1
+                    });
+                    // Pause between messages
+                    await new Promise(resolve => setTimeout(resolve, 1200));
+                }
+            }
+        }
+
+        io.emit('sections_complete', { success, errors, total });
     }
 
     getChatName(jid) {
@@ -398,6 +484,11 @@ class WhatsAppBot {
             socket.on('send_bulk', async (data) => {
                 const { numbers, message } = data;
                 await this.sendBulkMessage(numbers, message);
+            });
+
+            socket.on('send_sections', async (data) => {
+                const { sections } = data;
+                await this.sendSections(sections);
             });
 
             socket.on('disconnect', () => {

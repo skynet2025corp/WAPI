@@ -5,6 +5,8 @@ class WhatsAppUI {
         this.activeChat = null;
         this.setupEventListeners();
         this.setupSocketHandlers();
+        // Add an initial section
+        this.addSection();
     }
 
     setupEventListeners() {
@@ -18,9 +20,14 @@ class WhatsAppUI {
             }
         });
 
-        document.getElementById('send-bulk-btn').addEventListener('click', () => {
-            this.sendBulkMessage();
-        });
+        // Event handlers for sections UI
+        const addSectionBtn = document.getElementById('add-section-btn');
+        if (addSectionBtn) addSectionBtn.addEventListener('click', () => this.addSection());
+        // CSV file input for quick load
+        const csvFile = document.getElementById('csv-file');
+        if (csvFile) csvFile.addEventListener('change', (e) => this.handleCSVUpload(e));
+        const sendSectionsBtn = document.getElementById('send-sections-btn');
+        if (sendSectionsBtn) sendSectionsBtn.addEventListener('click', () => this.sendSections());
 
         // Enter en el modal de nuevo chat
         document.getElementById('new-chat-number').addEventListener('keypress', (e) => {
@@ -28,6 +35,110 @@ class WhatsAppUI {
                 this.createNewChat();
             }
         });
+    }
+
+    handleCSVUpload(e) {
+        const file = e.target.files && e.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = (evt) => {
+            const text = evt.target.result;
+            const rows = this.parseCSV(text);
+
+            // Detect header row if first cell contains 'number' or 'número'
+            let start = 0;
+            if (rows.length > 0) {
+                const header0 = (rows[0][0] || '').toString().toLowerCase();
+                if (header0.includes('number') || header0.includes('número') || header0.includes('numero')) {
+                    start = 1;
+                }
+            }
+
+            const invalidRows = [];
+            for (let i = start; i < rows.length; i++) {
+                const row = rows[i];
+                if (!row || row.length === 0) continue;
+                const number = (row[0] || '').toString().trim();
+                if (!number) {
+                    invalidRows.push(i + 1);
+                    continue;
+                }
+                const numOnly = number.replace(/[^0-9]/g, '');
+                const numRegex = /^[0-9]{10,15}$/;
+                if (!numRegex.test(numOnly)) {
+                    invalidRows.push(i + 1);
+                    continue;
+                }
+                const messages = row.slice(1).map(c => (c || '').toString().trim()).filter(Boolean);
+                // If no messages present, add an empty message so user can edit
+                this.addSection(numOnly, messages.length ? messages : ['']);
+            }
+
+            if (invalidRows.length > 0) {
+                alert(`Se encontraron filas con números inválidos o vacíos: ${invalidRows.join(', ')} (números de fila)`);
+            }
+
+            // Reset the file input so the same file can be loaded again
+            e.target.value = '';
+        };
+        reader.readAsText(file, 'UTF-8');
+    }
+
+    // Minimal CSV parser: handles quoted fields and commas
+    parseCSV(text) {
+        const rows = [];
+        let current = [];
+        let value = '';
+        let i = 0;
+        let inQuotes = false;
+        while (i < text.length) {
+            const ch = text[i];
+            if (inQuotes) {
+                if (ch === '"') {
+                    if (text[i + 1] === '"') { // escaped quote
+                        value += '"';
+                        i += 2;
+                        continue;
+                    } else {
+                        inQuotes = false;
+                        i++;
+                        continue;
+                    }
+                } else {
+                    value += ch;
+                    i++;
+                    continue;
+                }
+            }
+
+            if (ch === '"') {
+                inQuotes = true;
+                i++;
+            } else if (ch === ',') {
+                current.push(value);
+                value = '';
+                i++;
+            } else if (ch === '\r') {
+                // ignore
+                i++;
+            } else if (ch === '\n') {
+                current.push(value);
+                rows.push(current);
+                current = [];
+                value = '';
+                i++;
+            } else {
+                value += ch;
+                i++;
+            }
+        }
+        // push remaining
+        if (value !== '' || current.length > 0) {
+            current.push(value);
+            rows.push(current);
+        }
+        return rows;
     }
 
     setupSocketHandlers() {
@@ -59,17 +170,13 @@ class WhatsAppUI {
             this.updateChatInList(chatData);
         });
 
-        this.socket.on('bulk_start', (data) => {
-            this.showBulkProgress(data);
-        });
-
-        this.socket.on('bulk_progress', (data) => {
-            this.updateBulkProgress(data);
-        });
-
-        this.socket.on('bulk_complete', (data) => {
-            this.completeBulkSend(data);
-        });
+        // Bulk / Sections progress events
+        this.socket.on('bulk_start', (data) => { this.showBulkProgress(data); });
+        this.socket.on('bulk_progress', (data) => { this.updateBulkProgress(data); });
+        this.socket.on('bulk_complete', (data) => { this.completeBulkSend(data); });
+        this.socket.on('sections_start', (data) => { this.showBulkProgress(data); });
+        this.socket.on('sections_progress', (data) => { this.updateBulkProgress(data); });
+        this.socket.on('sections_complete', (data) => { this.completeBulkSend(data); });
 
         this.socket.on('error', (error) => {
             this.showError(error);
@@ -291,28 +398,192 @@ class WhatsAppUI {
     }
 
     sendBulkMessage() {
-        const numbersInput = document.getElementById('bulk-numbers').value.trim();
-        const message = document.getElementById('bulk-message').value.trim();
+        console.warn('sendBulkMessage is deprecated, use sendSections() instead');
+    }
 
-        if (!numbersInput || !message) {
-            alert('Por favor ingresa los números y el mensaje');
-            return;
+    // New behavior: Sections mode -> each section contains one number and multiple messages
+    addSection(numbers = [], messages = []) {
+        const container = document.getElementById('sections-container');
+        if (!container) return;
+
+        const index = container.children.length;
+        const section = document.createElement('div');
+        section.className = 'section-item';
+        section.dataset.index = index;
+        section.innerHTML = `
+            <div class="section-row">
+                <div class="form-group small">
+                    <label>Números (separados por coma)</label>
+                    <input type="text" class="section-number" placeholder="1234567890,0987654321" value="${this.escapeHtml(Array.isArray(numbers) ? numbers.join(',') : numbers)}">
+                    <input type="file" class="section-csv" accept=".csv" style="display:none;">
+                    <label class="csv-section-label btn">Cargar CSV</label>
+                </div>
+                <div class="form-group small">
+                    <label>Acciones</label>
+                    <div>
+                        <button class="btn btn-remove">Eliminar</button>
+                    </div>
+                </div>
+            </div>
+            <div class="form-group messages-block">
+                <label>Mensajes (por subsección)</label>
+                <div class="messages-controls">
+                    <button class="btn btn-add-message">Agregar Mensaje</button>
+                </div>
+                <div class="section-messages-list"></div>
+            </div>
+        `;
+
+        // Remove handler for section
+        section.querySelector('.btn-remove').addEventListener('click', () => {
+            section.remove();
+        });
+
+        // Add message button handler
+        const addMsgBtn = section.querySelector('.btn-add-message');
+        addMsgBtn.addEventListener('click', () => this.addMessageToSection(section));
+
+        // CSV upload for numbers in this section
+        const csvInput = section.querySelector('.section-csv');
+        const csvLabel = section.querySelector('.csv-section-label');
+        csvLabel.addEventListener('click', () => csvInput.click());
+        csvInput.addEventListener('change', (e) => this.handleSectionCSVUpload(e, section));
+
+        // Populate messages if passed (support string or array)
+        if (typeof messages === 'string') {
+            messages = messages.split(/\n+/).map(s => s.trim()).filter(Boolean);
+        }
+        if (Array.isArray(messages) && messages.length > 0) {
+            messages.forEach(msg => this.addMessageToSection(section, msg));
+        } else {
+            // default: add a single empty message field
+            this.addMessageToSection(section, '');
         }
 
-        const numbers = numbersInput.split(/[\n,]/)
-            .map(num => num.trim())
-            .filter(num => {
-                // Validar que sea un número válido
+        container.appendChild(section);
+        // Auto-scroll to the added section
+        container.scrollTop = container.scrollHeight;
+    }
+
+    handleSectionCSVUpload(e, section) {
+        const file = e.target.files && e.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = (evt) => {
+            const text = evt.target.result;
+            const rows = this.parseCSV(text);
+
+            const numbers = [];
+            for (let i = 0; i < rows.length; i++) {
+                const row = rows[i];
+                if (!row || row.length === 0) continue;
+                const rawNum = (row[0] || '').toString().trim();
+                if (!rawNum) continue;
+                const numOnly = rawNum.replace(/[^0-9]/g, '');
                 const numRegex = /^[0-9]{10,15}$/;
-                return numRegex.test(num);
-            });
+                if (!numRegex.test(numOnly)) continue;
+                numbers.push(numOnly);
+            }
 
-        if (numbers.length === 0) {
-            alert('Por favor ingresa al menos un número válido (10-15 dígitos)');
+            if (numbers.length === 0) {
+                alert('No se encontraron números válidos en el CSV');
+                e.target.value = '';
+                return;
+            }
+
+            const input = section.querySelector('.section-number');
+            const existed = input.value ? input.value.split(/[,\s]+/).map(s=>s.trim()).filter(Boolean) : [];
+            const merged = Array.from(new Set([...existed, ...numbers]));
+            input.value = merged.join(',');
+
+            e.target.value = '';
+        };
+        reader.readAsText(file, 'UTF-8');
+    }
+
+    // Add a message subitem to a section
+    addMessageToSection(sectionElement, text = '') {
+        const list = sectionElement.querySelector('.section-messages-list');
+        if (!list) return;
+
+        const item = document.createElement('div');
+        item.className = 'section-message-item';
+        item.innerHTML = `
+            <textarea class="section-message-textarea" rows="2" placeholder="Escribe el mensaje...">${this.escapeHtml(text)}</textarea>
+            <div class="msg-actions">
+                <button class="btn btn-remove-message">Eliminar</button>
+                <button class="btn btn-up">↑</button>
+                <button class="btn btn-down">↓</button>
+            </div>
+        `;
+
+        // Remove message handler
+        item.querySelector('.btn-remove-message').addEventListener('click', () => {
+            item.remove();
+        });
+
+        // Move up/down handlers
+        item.querySelector('.btn-up').addEventListener('click', () => {
+            const prev = item.previousElementSibling;
+            if (prev) list.insertBefore(item, prev);
+        });
+        item.querySelector('.btn-down').addEventListener('click', () => {
+            const next = item.nextElementSibling;
+            if (next) list.insertBefore(next, item);
+        });
+
+        list.appendChild(item);
+        // Auto-scroll to the new message at the bottom of the section
+        list.scrollTop = list.scrollHeight;
+    }
+
+    sendSections() {
+        const container = document.getElementById('sections-container');
+        if (!container) {
+            alert('No hay secciones disponibles');
             return;
         }
 
-        this.socket.emit('send_bulk', { numbers, message });
+        const sectionNodes = [...container.querySelectorAll('.section-item')];
+        if (sectionNodes.length === 0) {
+            alert('Añade al menos una sección');
+            return;
+        }
+
+        const sections = [];
+        let totalMessages = 0;
+
+        for (const node of sectionNodes) {
+            const numbersStr = node.querySelector('.section-number').value.trim();
+            const numbers = numbersStr.split(/[,\s]+/).map(n => n.trim()).filter(Boolean);
+            // Read messages from subitems
+            const messagesNodes = [...node.querySelectorAll('.section-message-textarea')];
+            const messages = messagesNodes.map(n => n.value.trim()).filter(Boolean);
+
+            if (!numbers || numbers.length === 0) {
+                alert('Por favor ingresa al menos un número en todas las secciones');
+                return;
+            }
+            const numRegex = /^[0-9]{10,15}$/;
+            const invalidNum = numbers.find(n => !numRegex.test(n));
+            if (invalidNum) {
+                alert(`Número inválido: ${invalidNum}`);
+                return;
+            }
+
+            // (messages variable already set from nodes)
+            if (messages.length === 0) {
+                alert(`Agrega al menos un mensaje para el número ${number}`);
+                return;
+            }
+
+            sections.push({ numbers, messages });
+            totalMessages += messages.length;
+        }
+
+        // Emitir evento al servidor
+        this.socket.emit('send_sections', { sections });
     }
 
     updateChatInList(chatData) {
@@ -383,10 +654,21 @@ class WhatsAppUI {
         const progressText = document.getElementById('progress-text');
         const progressStats = document.getElementById('progress-stats');
 
-        const percentage = (data.current / data.total) * 100;
+        const percentage = (data.total > 0 ? (data.current / data.total) * 100 : 0);
         progressFill.style.width = `${percentage}%`;
+        // Show overall progress
         progressText.textContent = `${data.current}/${data.total}`;
+        // Show stats
         progressStats.textContent = `✅ ${data.success} | ❌ ${data.errors}`;
+
+        // If there is section-specific detail, append it
+        if (typeof data.sectionIndex !== 'undefined') {
+            let sectionInfo = ` (Sección ${data.sectionIndex + 1}: ${data.sectionCurrent}/${data.sectionTotal})`;
+            if (typeof data.numberIndex !== 'undefined' && data.number) {
+                sectionInfo += ` - Nr ${data.numberIndex + 1}: ${data.number}`;
+            }
+            progressText.textContent += sectionInfo;
+        }
     }
 
     completeBulkSend(data) {
@@ -394,9 +676,13 @@ class WhatsAppUI {
             alert(`Envío masivo completado!\n✅ Exitosos: ${data.success}\n❌ Errores: ${data.errors}`);
             document.getElementById('bulk-progress').style.display = 'none';
             
-            // Limpiar formulario
-            document.getElementById('bulk-numbers').value = '';
-            document.getElementById('bulk-message').value = '';
+            // Limpiar formulario / Secciones
+            const sectionsContainer = document.getElementById('sections-container');
+            if (sectionsContainer) {
+                sectionsContainer.innerHTML = '';
+                // Add a fresh empty section
+                this.addSection();
+            }
         }, 1000);
     }
 
