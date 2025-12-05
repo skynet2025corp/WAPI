@@ -559,11 +559,32 @@ body {
 }
 .sections-status h3 { margin-bottom: 8px; }
 .status-controls { display: flex; justify-content: flex-end; margin-bottom: 8px; }
+.status-table-wrapper {
+    max-height: 300px;
+    overflow-y: auto;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+}
 .status-table { width: 100%; border-collapse: collapse; }
 .status-table th, .status-table td { padding: 8px 10px; border-bottom: 1px solid #eee; text-align: left; }
-.status-table th { background: #f7fafc; }
+.status-table th { background: #f7fafc; position: sticky; top: 0; z-index: 10; }
 .status-table tbody tr td:nth-child(5) { font-weight: bold; }
 .status-table td { font-size: 13px; }
+/* Scrollbar styling for status table */
+.status-table-wrapper::-webkit-scrollbar {
+    width: 8px;
+}
+.status-table-wrapper::-webkit-scrollbar-track {
+    background: #f1f1f1;
+    border-radius: 4px;
+}
+.status-table-wrapper::-webkit-scrollbar-thumb {
+    background: #cbd5e0;
+    border-radius: 4px;
+}
+.status-table-wrapper::-webkit-scrollbar-thumb:hover {
+    background: #a0aec0;
+}
 .status-table td small { color: #666; }
 
 .progress-bar {

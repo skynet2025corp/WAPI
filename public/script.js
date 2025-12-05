@@ -10,6 +10,8 @@ class WhatsAppUI {
         // Map to track statuses of numbers: key = `${sectionIndex}-${numberIndex}`
         this.sectionsStatus = new Map();
         this.lastGlobalSectionsProgress = { success: 0, errors: 0, current: 0 };
+        // Map to store section images in memory (indexed by section index) to avoid DOM dataset truncation
+        this.sectionImages = new Map(); // key: section_index, value: { dataUrl, name }
     }
 
     setupEventListeners() {
@@ -183,6 +185,9 @@ class WhatsAppUI {
         this.socket.on('sections_progress', (data) => {
             this.updateBulkProgress(data);
             this.updateSectionsStatusFromProgress(data);
+        });
+        this.socket.on('sections_debug', (d) => {
+            console.debug('sections_debug', d);
         });
         this.socket.on('sections_complete', (data) => { this.completeBulkSend(data); });
         this.socket.on('sections_complete', (data) => { this.finalizeSectionsStatus(data); });
@@ -441,6 +446,16 @@ class WhatsAppUI {
                 </div>
                 <div class="section-messages-list"></div>
             </div>
+            <div class="form-group">
+                <label>Imagen por Sección (opcional)</label>
+                <div style="display:flex;align-items:center;gap:8px;">
+                    <input type="file" accept="image/*" class="section-image-input" style="display:inline-block;">
+                    <button class="btn btn-clear-image" style="display:inline-block;">Eliminar imagen</button>
+                </div>
+                <div class="section-image-preview" style="margin-top:8px;display:none;">
+                    <img src="" alt="preview" style="max-width:160px;max-height:120px;border-radius:8px;border:1px solid #e2e8f0;" />
+                </div>
+            </div>
         `;
 
         // Remove handler for section
@@ -457,6 +472,43 @@ class WhatsAppUI {
         const csvLabel = section.querySelector('.csv-section-label');
         csvLabel.addEventListener('click', () => csvInput.click());
         csvInput.addEventListener('change', (e) => this.handleSectionCSVUpload(e, section));
+
+        // Image upload per section
+        const imgInput = section.querySelector('.section-image-input');
+        const imgClearBtn = section.querySelector('.btn-clear-image');
+        const imgPreviewContainer = section.querySelector('.section-image-preview');
+        const imgPreview = imgPreviewContainer ? imgPreviewContainer.querySelector('img') : null;
+        const sectionIndex = index !== undefined ? index : document.querySelectorAll('.section-item').length - 1;
+        
+        if (imgInput) {
+            imgInput.addEventListener('change', (ev) => {
+                const f = ev.target.files && ev.target.files[0];
+                if (!f) return;
+                const reader = new FileReader();
+                reader.onload = (evt) => {
+                    const dataUrl = evt.target.result;
+                    // Store in memory map instead of DOM dataset to avoid truncation
+                    this.sectionImages.set(sectionIndex, { dataUrl, name: f.name });
+                    console.log(`📸 Imagen almacenada para sección ${sectionIndex}: ${f.name} (${(f.size/1024).toFixed(2)} KB)`);
+                    if (imgPreview) {
+                        imgPreview.src = dataUrl;
+                        imgPreviewContainer.style.display = 'block';
+                    }
+                };
+                reader.readAsDataURL(f);
+            });
+        }
+        if (imgClearBtn) {
+            imgClearBtn.addEventListener('click', () => {
+                if (imgInput) imgInput.value = '';
+                this.sectionImages.delete(sectionIndex);
+                if (imgPreview) {
+                    imgPreview.src = '';
+                    imgPreviewContainer.style.display = 'none';
+                }
+                console.log(`🗑️ Imagen eliminada de sección ${sectionIndex}`);
+            });
+        }
 
         // Populate messages if passed (support string or array)
         if (typeof messages === 'string') {
@@ -563,7 +615,8 @@ class WhatsAppUI {
         const sections = [];
         let totalMessages = 0;
 
-        for (const node of sectionNodes) {
+        for (let sectionIndex = 0; sectionIndex < sectionNodes.length; sectionIndex++) {
+            const node = sectionNodes[sectionIndex];
             const numbersStr = node.querySelector('.section-number').value.trim();
             const numbers = numbersStr.split(/[,\s]+/).map(n => n.trim()).filter(Boolean);
             // Read messages from subitems
@@ -583,15 +636,19 @@ class WhatsAppUI {
 
             // (messages variable already set from nodes)
             if (messages.length === 0) {
-                alert(`Agrega al menos un mensaje para el número ${number}`);
+                alert(`Agrega al menos un mensaje`);
                 return;
             }
 
-            sections.push({ numbers, messages });
+            // Get image from in-memory map instead of DOM dataset
+            const imgData = this.sectionImages.get(sectionIndex) || null;
+            console.log(`📤 Sección ${sectionIndex}: image=${imgData ? 'presente (' + (imgData.dataUrl.length / 1024).toFixed(2) + ' KB)' : 'vacía'}`);
+            sections.push({ numbers, messages, image: imgData ? imgData.dataUrl : null, imageName: imgData ? imgData.name : null });
             totalMessages += messages.length;
         }
 
         // Prepare and render status table
+        console.log(`📢 Enviando ${sections.length} secciones (${sections.filter(s=>s.image).length} con imagen)`);
         this.prepareSectionsStatus(sections);
         this.renderSectionsStatusTable();
 

@@ -7,7 +7,8 @@ const path = require('path');
 
 const app = express();
 const server = http.createServer(app);
-const io = socketIo(server);
+// Increase Socket.io max payload size to handle large image data URLs (default 1MB)
+const io = socketIo(server, { maxHttpBufferSize: 50 * 1024 * 1024 }); // 50 MB
 
 app.use(express.static('public'));
 
@@ -23,6 +24,8 @@ class WhatsAppBot {
         this.clients = new Set();
         this.currentActiveChat = null;
         this.chats = new Map(); // Almacenar chats
+        this.isSendingBulk = false; // Track if bulk sending is in progress
+        this.lastConnectionCheck = Date.now();
     }
 
     async connect() {
@@ -96,7 +99,7 @@ class WhatsAppBot {
             this.sock.ev.on('connection.update', (update) => {
                 const { connection, lastDisconnect, qr } = update;
                 
-                console.log('🔄 Estado de conexión:', connection);
+                console.log('🔄 Estado de conexión:', connection, this.isSendingBulk ? '(durante envío masivo)' : '');
                 
                 if (qr) {
                     console.log('\n📱 ESCANEA ESTE CÓDIGO QR CON WHATSAPP:');
@@ -121,7 +124,12 @@ class WhatsAppBot {
                     const shouldReconnect = 
                         lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
                     
-                    console.log('❌ Conexión cerrada');
+                    console.log('❌ Conexión cerrada' + (this.isSendingBulk ? ' (durante envío masivo)' : ''));
+                    
+                    if (this.isSendingBulk) {
+                        io.emit('error', 'La conexión se desconectó durante el envío masivo. Se detendrá la operación.');
+                    }
+                    
                     io.emit('status', 'Conexión cerrada - Reconectando...');
                     io.emit('connected', false);
                     
@@ -271,6 +279,11 @@ class WhatsAppBot {
 
             const sendRes = await this.sock.sendMessage(to, { text: text });
             
+            // Log detailed response for debugging
+            console.log(`📤 Mensaje enviado a ${this.getChatName(to)}: ${text}`, 
+                `[MsgID: ${sendRes?.key?.id || 'N/A'}]`, 
+                `[Status: ${sendRes?.status || 'N/A'}]`);
+            
             const sentMessage = {
                 id: Date.now().toString(),
                 sender: this.getChatName(to),
@@ -292,16 +305,14 @@ class WhatsAppBot {
             if (this.currentActiveChat === to) {
                 io.emit('new_message', sentMessage);
             }
-
-            console.log(`📤 Mensaje enviado a ${this.getChatName(to)}: ${text}`, sendRes);
             
-            // Also return the send response so the caller can inspect delivery info
+            // Return the full response so caller can check delivery status
             return sendRes;
 
         } catch (error) {
-            console.error('❌ Error enviando mensaje:', error.message);
+            console.error('❌ Error enviando mensaje a', to, ':', error.message);
             io.emit('error', `Error enviando mensaje: ${error.message}`);
-            return false;
+            throw error; // Re-throw so caller knows it failed
         }
     }
 
@@ -353,7 +364,7 @@ class WhatsAppBot {
                     errors: errors
                 });
                 
-                await new Promise(resolve => setTimeout(resolve, 2000));
+                await new Promise(resolve => setTimeout(resolve, 15000));
 
             } catch (error) {
                 errors++;
@@ -375,12 +386,24 @@ class WhatsAppBot {
             return;
         }
 
+        console.log('🔔 sendSections called - incoming sections type:', typeof sections);
         if (!Array.isArray(sections)) {
             console.warn('sendSections: sections is not an array', sections);
             io.emit('error', 'Invalid sections payload');
             return;
         }
 
+        // Mark bulk sending as in progress
+        this.isSendingBulk = true;
+        
+        try {
+            await this._sendSectionsAsync(sections);
+        } finally {
+            this.isSendingBulk = false;
+        }
+    }
+
+    async _sendSectionsAsync(sections) {
         // Normalize and prepare sections: ensure numbers as array and messages as array
         const normalized = sections.map((s) => {
             let numbers = [];
@@ -388,7 +411,10 @@ class WhatsAppBot {
             else if (typeof s.number === 'string' && s.number.trim()) numbers = s.number.split(/[ ,\n\r]+/).map(n => n.trim()).filter(Boolean);
 
             const messages = Array.isArray(s.messages) ? s.messages : (s.message ? [s.message] : []);
-            return { numbers, messages };
+            //se cargan las imagenes opcionales si nos es correcta
+            const image = s.image || null;
+            const imageName = s.imageName || null;
+            return { numbers, messages, image, imageName };
         });
 
         const total = normalized.reduce((acc, s) => acc + (s.numbers.length * s.messages.length), 0);
@@ -407,6 +433,17 @@ class WhatsAppBot {
                 const number = numberRaw.includes('@') ? numberRaw : numberRaw + '@s.whatsapp.net';
                 const perKey = `${si}-${ni}`;
                 perNumberCounters[perKey] = perNumberCounters[perKey] || { success: 0, errors: 0 };
+                
+                // Check connection health every few messages
+                if (current > 0 && current % 5 === 0) {
+                    if (!this.isConnected) {
+                        console.error('❌ Conexión perdida durante envío. Abortando operación...');
+                        io.emit('error', 'Conexión perdida durante envío masivo. Por favor, reconecta e intenta de nuevo.');
+                        io.emit('sections_complete', { success, errors, total, aborted: true });
+                        return;
+                    }
+                }
+                
                 // Preflight check: if possible, validate that number is a WhatsApp account
                 try {
                     if (typeof this.sock.onWhatsApp === 'function') {
@@ -425,13 +462,59 @@ class WhatsAppBot {
                 }
                 for (let mi = 0; mi < s.messages.length; mi++) {
                     const text = s.messages[mi];
+                        // If this section includes an image, send it once per number before text messages
+                        if (mi === 0 && s.image) {
+                            try {
+                                const dataUrl = s.image;
+                                const match = (dataUrl || '').match(/^data:(.+);base64,(.+)$/);
+                                let buffer;
+                                let mimeType = 'image/jpeg';
+                                if (match) {
+                                    mimeType = match[1];
+                                    buffer = Buffer.from(match[2], 'base64');
+                                } else {
+                                    // fallback: assume raw base64
+                                    buffer = Buffer.from(dataUrl, 'base64');
+                                }
+                                console.log(new Date().toISOString(), `→ Sending image to ${numberRaw} (mime=${mimeType}, bytes=${buffer.length})`);
+                                io.emit('sections_debug', { type: 'sending_image', sectionIndex: si, numberIndex: ni, number: numberRaw, bytes: buffer.length, mimeType });
+                                const imgRes = await this.sock.sendMessage(number, { image: buffer, mimetype: mimeType, caption: '' });
+                                console.log(new Date().toISOString(), `🖼️ Image sendRes for ${numberRaw}:`, { id: imgRes?.key?.id, status: imgRes?.status });
+                                io.emit('sections_debug', { type: 'image_sent', sectionIndex: si, numberIndex: ni, number: numberRaw, id: imgRes?.key?.id, status: imgRes?.status });
+                            } catch (imgErr) {
+                                console.error(`❌ Error enviando imagen a ${numberRaw}:`, imgErr && imgErr.message ? imgErr.message : imgErr);
+                                // record an error but continue sending the text messages
+                                errors++;
+                                perNumberCounters[perKey].errors++;
+                                io.emit('sections_progress', { current, total, success, errors, sectionIndex: si, numberIndex: ni, number: numberRaw, perNumberSuccess: perNumberCounters[perKey].success, perNumberErrors: perNumberCounters[perKey].errors, sectionTotal: s.messages.length, sectionCurrent: mi + 1 });
+                            }
+                        }
                     try {
-                        await this.sendMessage(number, text);
-                        success++;
-                        perNumberCounters[perKey].success++;
+                        const sendRes = await this.sendMessage(number, text);
+                        // Check if sendRes contains a message key indicating success
+                        if (sendRes && sendRes.key && sendRes.key.id) {
+                            success++;
+                            perNumberCounters[perKey].success++;
+                            console.log(`✅ Mensaje confirmado a ${numberRaw}: ${text.substring(0, 50)}`);
+                            io.emit('sections_debug', { type: 'message_sent', sectionIndex: si, numberIndex: ni, number: numberRaw, messageIndex: mi, id: sendRes.key.id });
+                        } else {
+                            // If sendMessage didn't return a proper message key, it's likely a failure
+                            errors++;
+                            perNumberCounters[perKey].errors++;
+                            console.warn(`⚠️ Mensaje sin confirmación a ${numberRaw}: ${text.substring(0, 50)}`);
+                            io.emit('sections_debug', { type: 'message_no_confirm', sectionIndex: si, numberIndex: ni, number: numberRaw, messageIndex: mi, sendRes });
+                        }
                     } catch (error) {
                         errors++;
                         perNumberCounters[perKey].errors++;
+                        console.error(`❌ Error enviando a ${numberRaw}:`, error.message);
+                        
+                        // If it's a connection error, stop sending
+                        if (error.message.includes('No conectado')) {
+                            console.error('Deteniendo envío masivo - No hay conexión');
+                            io.emit('sections_complete', { success, errors, total, aborted: true });
+                            return;
+                        }
                     }
                     current++;
                     io.emit('sections_progress', {
@@ -447,8 +530,8 @@ class WhatsAppBot {
                         sectionTotal: s.messages.length,
                         sectionCurrent: mi + 1
                     });
-                    // Pause between messages
-                    await new Promise(resolve => setTimeout(resolve, 1200));
+                    // Pause between messages (10 segundos por numero)
+                    await new Promise(resolve => setTimeout(resolve, 15000));
                 }
             }
         }
@@ -538,8 +621,23 @@ class WhatsAppBot {
             });
 
             socket.on('send_sections', async (data) => {
-                const { sections } = data;
-                await this.sendSections(sections);
+                try {
+                    const { sections } = data || {};
+                    console.log('📥 Received send_sections from client. sections.length=', Array.isArray(sections) ? sections.length : 0);
+                    // Log image sizes and details
+                    if (Array.isArray(sections)) {
+                        sections.forEach((s, idx) => {
+                            const imgSize = s.image ? (s.image.length / 1024).toFixed(2) : 0;
+                            console.log(`   Sección ${idx}: ${s.numbers?.length || 0} números, ${s.messages?.length || 0} mensajes, imagen: ${s.image ? imgSize + ' KB' : 'vacía'}`);
+                        });
+                    }
+                    // For quick debugging, log a small preview (avoid huge dumps)
+                    try { console.log('📥 sections preview:', JSON.stringify((sections || []).map(s=>({ numbers: (s.numbers||[]).slice(0,3), messagesCount: (s.messages||[]).length, hasImage: !!s.image, imageSize: s.image ? (s.image.length / 1024).toFixed(2) + ' KB' : 'no' })), null, 2)); } catch(e) {}
+                    await this.sendSections(sections);
+                } catch (err) {
+                    console.error('Error handling send_sections:', err && err.stack ? err.stack : err);
+                    socket.emit('error', 'Error procesando send_sections: ' + (err && err.message ? err.message : String(err)));
+                }
             });
 
             socket.on('disconnect', () => {
